@@ -36,18 +36,18 @@
 const int CS_PIN = 10;     // Chip Select SPI
 
 // PARAMETRI DELL'ENCODER
-const long CPR = 72;             // Encoder counts per revolution (impulsi ABZ totali in un giro)
+const int CPR = 72;              // Encoder counts per revolution (impulsi ABZ totali in un giro)
 const long SPI_MAX_VAL = 32768;  // L'MT6826 ha una risoluzione interna a 15 bit (2^15)
 
-const long CPR_X2 = (CPR * 2);
-const long CPR_X4 = (CPR * 4);
+const int CPR_X2 = (CPR * 2);   
+const int CPR_X4 = (CPR * 4);    // 72 CPR * 4 (quadrature/both edges)
 
 // Con 72 impulsi a giro, abbiamo 288 cambi di stato (fronti) totali
 // Ogni mezzo giro (180°) sono 144 fronti.
 // Un "settore" della ruota fonica (5°) dura 4 fronti.
-volatile int front_counter = 0; 
+volatile int edge_counter = 0; // Counts both rising and falling edges
 
-long value_to_add = 0;   // Il valore da aggiungere alla lettura dell'encoder per posizionare correttamente lo 0
+int value_to_add = 0;   // Il valore da aggiungere alla lettura dell'encoder per posizionare correttamente lo 0
 
 // Per i dati nella EEPROM 
 const int start_address = 10;   // Iniziamo dall'indirizzo 10 per sicurezza
@@ -117,18 +117,18 @@ void setup() {
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE3));
 
   // Prova a leggere più volte in caso di CRC errato
-  uint8_t error;
-  uint8_t num_error = 0;
+  int error;
+  int num_error = 0;
   do {
     error = readAngleWithCRC(&data);
     if (!error) {
       // Mappiamo i 15 bit dell'SPI sui fronti del giro
-      front_counter = map(data.angle, 0, SPI_MAX_VAL, 0, CPR_X4);
+      edge_counter = map(data.angle, 0, SPI_MAX_VAL, 0, CPR_X4);
       // aggiungo la variazione dello zero
-      front_counter += value_to_add; 
+      edge_counter += value_to_add; 
 
       Serial.print("Initial position = ");
-      Serial.println(front_counter);
+      Serial.println(edge_counter);
       Serial.print("Value to add = ");
       Serial.println(value_to_add);
 
@@ -171,7 +171,7 @@ void loop() {
       value_to_add = valore_str.toInt();
       // sposto lo zero
       noInterrupts();                          // Disabilita gli interrupt
-      front_counter += value_to_add;  
+      edge_counter += value_to_add;  
       interrupts();                            // Riabilita gli interrupt
 
     } else if (input.startsWith("SAVE")) {
@@ -219,7 +219,7 @@ void loop() {
     }
   }
   if (print_debug) {
-    Serial.print(front_counter);
+    Serial.print(edge_counter);
     Serial.print("\t");
     if (!readAngleWithCRC(&data)) {
       Serial.println(data.angle);
@@ -232,27 +232,31 @@ void loop() {
 
 void gestisciEncoder() {
   // Lettura rapida stato Pin 2 e 3
-  byte stato = PIND;
-  bool a = stato & (1 << 2);
-  bool b = stato & (1 << 3);
-  
+  byte pins = PIND;
+  bool a = (pins >> 2) & 1;
+  bool b = (pins >> 3) & 1;
+
   // Aggiornamento posizione (Quadratura 4x)
   static bool lastA, lastB;
   if (a != lastA || b != lastB) {
-    if ((lastA ^ b) & 1) front_counter++; 
-    else front_counter--;
+    if ((lastA ^ b) & 1) edge_counter++; 
+    else edge_counter--;
     
     lastA = a;
     lastB = b;
   }
 
   // Normalizzazione da 0 a (CPR_X4 -1) (Un giro completo)
-  if (front_counter >= CPR_X4) front_counter -= CPR_X4;
-  else if (front_counter < 0) front_counter += CPR_X4;
+  if (edge_counter >= CPR_X4) edge_counter -= CPR_X4;
+  //else if (edge_counter < 0) edge_counter += CPR_X4; // Serve solo se "giro all'indietro"
 
   // Logica Ruota Fonica (Mezzo giro = CPR_X2 fronti)
   // Usando il modulo CPR_X2, il controllo vale per ENTRAMBI i mezzi giri
-  int pos_rel = front_counter % CPR_X2;
+  // int pos_rel = edge_counter % CPR_X2; // fare il modulo impiega ~150-250 cicli CPU
+  // Il risultato è lo stesso di prima ma con pochi cicli CPU
+  uint16_t pos_rel;
+  if (edge_counter >= CPR_X2) pos_rel = edge_counter - CPR_X2;
+  else pos_rel = edge_counter;
 
   if (pos_rel >= (CPR_X2 - 4)) {
     // ULTIMO SETTORE: Dente mancante (Pin LOW)
@@ -261,10 +265,19 @@ void gestisciEncoder() {
     // Generazione onda quadra
     // Ogni settore è lungo 4 fronti
     // Vogliamo l'uscita ALTA per i primi 2 fronti e BASSA per i restanti 2
-    if ((pos_rel % 4) < 2) {
-      PORTB |= (1 << 0);  // Pin 8 HIGH
+    /* // fare il modulo impiega ~150-250 cicli CPU 
+      if ((pos_rel % 4) < 2) {
+        PORTB |= (1 << 0);  // Pin 8 HIGH
+      } else {
+        PORTB &= ~(1 << 0); // Pin 8 LOW
+      }
+    */
+    // Invece del modulo (pos_rel % 4), uso l'operatore bitwise &
+    // (pos_rel & 3) restituisce il resto della divisione per 4 (funziona solo con potenze di 2)
+    if ((pos_rel & 3) < 2) {
+      PORTB |= (1 << 0);
     } else {
-      PORTB &= ~(1 << 0); // Pin 8 LOW
+      PORTB &= ~(1 << 0);
     }
   }
 }
