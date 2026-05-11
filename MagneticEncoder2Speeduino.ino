@@ -169,6 +169,10 @@ void loop() {
       // Estrae la parte numerica dopo i primi 4 caratteri ("ADD:")
       String valore_str = input.substring(4);
       value_to_add = valore_str.toInt();
+      if (value_to_add < 0 || value_to_add >= (CPR_X2 -1)) {
+        Serial.print("WARNING: value to add the should be between 0 and ");
+        Serial.println(CPR_X2 - 1);
+      }
       // sposto lo zero
       noInterrupts();                          // Disabilita gli interrupt
       edge_counter += value_to_add;  
@@ -304,15 +308,18 @@ void manageEncoderAZ() {
   bool a = (pins >> 2) & 1;
   bool z = (pins >> 3) & 1;
 
-  // Aggiornamento posizione (Quadratura 4x)
+  // Aggiornamento posizione
   static bool lastA, lastZ;
   if (z && !lastZ) {
+    // fronte di salita di Z
     edge_counter = value_to_add;
     lastA = a;
   } else if (a != lastA) {
+    // cambio di stato di A
     edge_counter++; 
     lastA = a;
   }
+  // salvo Z per il futuro
   lastZ = z;
 
   // Normalizzazione da 0 a (CPR_X2 -1) (Un giro completo)
@@ -324,7 +331,7 @@ void manageEncoderAZ() {
   else pos_rel = edge_counter;
 
   if (pos_rel >= (CPR - 2)) {
-    // ULTIMO SETTORE: Dente mancante (Pin LOW)
+    // ULTIMO SETTORE: Dente mancante -> LOW
     PORTB &= ~(1 << 0); // Pin 8 LOW
   } else {
     // Onda quadra basata sul bit 0 (pari/dispari)
